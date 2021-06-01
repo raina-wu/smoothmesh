@@ -40,6 +40,7 @@ MObject smoothMesh::laplace;
 MObject smoothMesh::iterations;
 MObject smoothMesh::operation;
 MObject smoothMesh::volume;
+MObject smoothMesh::offset;
 
 //Smooth Node
 MStatus smoothMesh::deform( MDataBlock& data, MItGeometry& geomIter, const MMatrix &localToWorldMatrix, unsigned int mIndex)
@@ -51,19 +52,21 @@ MStatus smoothMesh::deform( MDataBlock& data, MItGeometry& geomIter, const MMatr
 	float laplaceV = data.inputValue(laplace, &status ).asFloat();
 	float volumeV = data.inputValue(volume, &status ).asFloat();
 	float envelopeV = data.inputValue(envelope, &status ).asFloat();
-	
+	float offsetV = data.inputValue(offset, &status).asFloat();
+
 	//Get points using MItGeometry this time
 	MPointArray allPoints;
 	geomIter.allPositions(allPoints);
 
 	//Efficiency...
 	if (envelopeV * laplaceV > 0) {
-		//Copy all points to averages.
-		MPointArray avgPoints;
-		avgPoints.copy(allPoints);
 		
 		//declare values for later
 		int index;
+
+		//Copy all points to averages.
+		MPointArray avgPoints;
+		avgPoints.copy(allPoints);	
 		
 		//Set dirty bit if something drastic happened
 		if (allPoints.length() != nearVerts.size()) {
@@ -112,6 +115,15 @@ MStatus smoothMesh::deform( MDataBlock& data, MItGeometry& geomIter, const MMatr
 		//Declare stuff for iterator loop
 		MFloatArray weights;
 		std::set <int>::iterator nearVertsIter;
+
+		//Get weights
+		geomIter.reset();
+		for (; !geomIter.isDone(); geomIter.next()) {
+			index = geomIter.index();
+			weights.append(weightValue(data, mIndex, index) * envelopeV);
+			if (weights[index] > 1)
+				weights.set(1.0, index);
+		}
 		
 		//Define Taubin stuff.
 		int step;
@@ -133,12 +145,6 @@ MStatus smoothMesh::deform( MDataBlock& data, MItGeometry& geomIter, const MMatr
 			geomIter.reset();
 			for ( ; !geomIter.isDone(); geomIter.next() ) {
 				index = geomIter.index();
-				//calculate the weights only once.
-				if (it == 0) {
-					weights.append(weightValue(data, mIndex, index)  * envelopeV);
-					if (weights[index] > 1)
-						weights.set(1.0, index);
-				}
 				
 				//Skip deformation calculation if we don't need to.
 				if (weights[index] > 0.01){							
@@ -154,10 +160,31 @@ MStatus smoothMesh::deform( MDataBlock& data, MItGeometry& geomIter, const MMatr
 			//Update original points to new averages.
 			allPoints.copy(avgPoints);
 		}
+
+		//Apply the smooth deformation
+		geomIter.setAllPositions(allPoints);
+
+		//Offset surface first
+		if (offsetV != 0) {
+			MArrayDataHandle inputArray = data.inputArrayValue(input);
+			inputArray.jumpToElement(mIndex);
+			MDataHandle inputData = inputArray.inputValue();
+			MDataHandle inputGeomDataH = inputData.child(inputGeom);
+			MObject inputMesh = inputGeomDataH.asMesh();
+			MItMeshVertex vertIter(inputMesh);
+
+			for (; !vertIter.isDone(); vertIter.next()) {
+				index = vertIter.index();
+				if (weights[index] > 0) {
+					MVector normal(0, 0, 0);
+					vertIter.getNormal(normal);
+					allPoints[index] += normal * offsetV * weights[index];
+				}				
+			}
+			//Apply surface offset
+			geomIter.setAllPositions(allPoints);
+		}
 	}
-	
-	//Apply the deformation
-	geomIter.setAllPositions(allPoints);
 	
 	//This was here from someone else.  Shouldn't this be...earlier in the code?  Like the beginning? 
 	//Oh well, maybe always succeeding is a good thing.
@@ -204,16 +231,22 @@ MStatus smoothMesh::initialize()
 	numAttr.setKeyable( true );
 	numAttr.setStorable( true );
 	
+	offset = numAttr.create("offset", "os", MFnNumericData::kFloat, 0.0);
+	numAttr.setKeyable(true);
+	numAttr.setStorable(true);
+
 	addAttribute(operation);
 	addAttribute(iterations);
 	addAttribute(laplace);
 	addAttribute(volume);
+	addAttribute(offset);
 	
 	attributeAffects(operation, outputGeom);
 	attributeAffects(iterations, outputGeom);
 	attributeAffects(laplace, outputGeom);
 	attributeAffects(volume, outputGeom);
-	
+	attributeAffects(offset, outputGeom);
+
 	MGlobal::executeCommand( "makePaintable -attrType multiFloat -sm deformer smoothMesh weights;" );
 	return MS::kSuccess;
 }

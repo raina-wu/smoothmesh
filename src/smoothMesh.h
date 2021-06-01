@@ -55,6 +55,7 @@ public:
 	static MObject		operation;
 	static MObject      laplace;
 	static MObject      volume;
+	static MObject		offset;
 };
 
 
